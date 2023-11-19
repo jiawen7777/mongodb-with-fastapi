@@ -1,13 +1,15 @@
 import os
 import shutil
 from typing import Optional, List
-
+from fastapi import File,UploadFile, APIRouter
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Body, HTTPException, status
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from pydantic import ConfigDict, BaseModel, Field, EmailStr
 from pydantic.functional_validators import BeforeValidator
 from starlette.middleware.cors import CORSMiddleware
-
+import uuid
 from typing_extensions import Annotated
 from datetime import datetime
 from bson import ObjectId
@@ -15,12 +17,15 @@ import motor.motor_asyncio
 from pymongo import ReturnDocument
 
 from algorithm.file_tree_util import get_file_tree
+# 创建一个路由器实例
+
+
 
 app = FastAPI(
     title="Markdown Editor API",
     summary="A sample application showing how to use FastAPI to add a RESTful API to a MongoDB collection.",
 )
-
+router = APIRouter()
 origins = ["http://localhost:3000"]
 
 app.add_middleware(
@@ -30,6 +35,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 假设您的静态文件存储在后端项目的"static"文件夹中
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# 把路由器包含到 FastAPI 应用中，并添加一个前缀 `/api`
+
+
+
 client = motor.motor_asyncio.AsyncIOMotorClient(
     "mongodb://localhost:27017/?readPreference=primary&ssl=false&directConnection=true")
 db = client.my_note
@@ -109,7 +121,7 @@ class MarkdownCollection(BaseModel):
     markdowns: List[MarkdownModel]
 
 
-@app.post(
+@router.post(
     "/markdowns/",
     response_description="Add new markdown file",
     response_model=MarkdownModel,
@@ -131,7 +143,7 @@ async def create_markdown(markdown: MarkdownModel = Body(...)):
     return created_markdown
 
 
-@app.get(
+@router.get(
     "/markdowns/",
     response_description="List all markdown files",
     response_model=MarkdownCollection,
@@ -146,7 +158,7 @@ async def list_markdowns():
     return MarkdownCollection(markdowns=await markdown_collection.find().to_list(1000))
 
 
-@app.get(
+@router.get(
     "/markdowns/{id}",
     response_description="Get a single markdown",
     response_model=MarkdownModel,
@@ -164,7 +176,7 @@ async def show_markdown(id: str):
     raise HTTPException(status_code=404, detail=f"markdown {id} not found")
 
 
-@app.put(
+@router.put(
     "/markdowns/{id}",
     response_description="Update a markdown",
     response_model=MarkdownModel,
@@ -199,7 +211,7 @@ async def update_markdown(id: str, markdown: UpdateMarkdownModel = Body(...)):
     raise HTTPException(status_code=404, detail=f"markdown {id} not found")
 
 
-@app.delete("/markdowns/{id}", response_description="Delete a markdown")
+@router.delete("/markdowns/{id}", response_description="Delete a markdown")
 async def delete_markdown(id: str):
     """
     Remove a single markdown record from the database.
@@ -238,26 +250,26 @@ class FileContent(BaseModel):
 
 
 
-@app.get("/folder-items")
+@router.get("/folder-items")
 async def get_folder_items(path: str):
     return get_file_tree(path)
 
 
-@app.post("/file")
+@router.post("/file")
 async def get_folder_items(node_item: NodeItem):
     file_path = os.path.join(root_path, node_item.path, node_item.name)
     create_file(file_path)
     return "ok"
 
 
-@app.post("/folder")
+@router.post("/folder")
 async def get_folder_items(node_item: NodeItem):
     folder_path = os.path.join(root_path, node_item.path, node_item.name)
     create_folder(folder_path)
     return "ok"
 
 
-@app.post("/get-file-content/")
+@router.post("/get-file-content/")
 async def get_file_content(file_request: FileRequest):
     file_path = os.path.join(root_path, file_request.path)
     if os.path.exists(file_path) and os.path.isfile(file_path):
@@ -267,7 +279,7 @@ async def get_file_content(file_request: FileRequest):
     return {"content": "", "error": "File does not exist or is not a file."}
 
 
-@app.post("/save-file")
+@router.post("/save-file")
 async def save_file(file_content: FileContent):
     try:
         # 根据需要修改路径
@@ -281,7 +293,7 @@ async def save_file(file_content: FileContent):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/delete/")
+@router.delete("/delete/")
 async def delete_file_or_directory(path: str):
     # 解码路径
     file_path = os.path.join(root_path, path)
@@ -298,3 +310,24 @@ async def delete_file_or_directory(path: str):
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"detail": "Item deleted successfully"}
+
+
+@router.post("/upload-image")
+async def upload_image(file: UploadFile = File(...)):
+
+    file_location = f"uploads/{str(uuid.uuid4())}/{file.filename}"
+    
+    os.makedirs(os.path.dirname(file_location), exist_ok=True)
+    with open(file_location, "wb+") as file_object:
+        file_object.write(file.file.read())
+
+    response = {
+        "alt": "image",
+        "url": f"{file_location}",
+        "markdown": f"![image](/{file_location})"
+    }
+    
+    return JSONResponse(response)
+
+# markdown-editor.com
+app.include_router(router, prefix="/api")
